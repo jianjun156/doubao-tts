@@ -8,7 +8,8 @@
 使用方法:
     export DOUBAO_APP_ID="your_app_id"
     export DOUBAO_ACCESS_KEY="your_access_key"
-    python3 tts_synthesize.py --text "你好世界" --speaker "S_9W2ToNVW1" --output output.mp3
+    export DOUBAO_SPEAKER="zh_female_xiaohe_uranus_bigtts"  # 可选，默认值
+    python3 tts_synthesize.py --text "你好世界" --output output.mp3
 """
 
 import argparse
@@ -40,6 +41,17 @@ RESOURCE_ID_MAP = {
 VALID_SAMPLE_RATES = [8000, 16000, 22050, 24000, 32000, 44100, 48000]
 VALID_FORMATS = ["mp3", "ogg_opus", "pcm"]
 
+DEFAULT_SPEAKER = "zh_female_xiaohe_uranus_bigtts"
+
+
+def infer_resource_id(speaker: str) -> str:
+    """根据音色 ID 自动推断 resource_id。"""
+    if speaker.startswith("S_"):
+        return "seed-icl-1.0"
+    if "uranus" in speaker:
+        return "seed-tts-2.0"
+    return "seed-tts-1.0"
+
 
 def synthesize(
     text: str,
@@ -52,6 +64,8 @@ def synthesize(
     speech_rate: int = 0,
     loudness_rate: int = 0,
     pitch: int = 0,
+    emotion: str = "",
+    emotion_scale: int = 0,
     output_path: str = "output.mp3",
     model: str = "",
 ) -> str:
@@ -69,6 +83,8 @@ def synthesize(
         speech_rate: 语速 [-50, 100]
         loudness_rate: 音量 [-50, 100]
         pitch: 音调 [-12, 12]
+        emotion: 情感类型（如 happy/sad/angry，仅部分音色支持）
+        emotion_scale: 情绪强度 [1, 5]，默认 4（需配合 emotion 使用）
         output_path: 输出文件路径
         model: 模型版本（如 seed-tts-1.1）
 
@@ -86,15 +102,22 @@ def synthesize(
     }
 
     # 构建请求体
+    audio_params = {
+        "format": audio_format,
+        "sample_rate": sample_rate,
+        "speech_rate": speech_rate,
+        "loudness_rate": loudness_rate,
+    }
+
+    if emotion:
+        audio_params["emotion"] = emotion
+        if emotion_scale:
+            audio_params["emotion_scale"] = emotion_scale
+
     req_params = {
         "text": text,
         "speaker": speaker,
-        "audio_params": {
-            "format": audio_format,
-            "sample_rate": sample_rate,
-            "speech_rate": speech_rate,
-            "loudness_rate": loudness_rate,
-        },
+        "audio_params": audio_params,
     }
 
     # 可选: 模型版本
@@ -114,6 +137,8 @@ def synthesize(
     print(f"[INFO] 音色: {speaker}")
     print(f"[INFO] 资源 ID: {resource_id}")
     print(f"[INFO] 格式: {audio_format}, 采样率: {sample_rate}")
+    if emotion:
+        print(f"[INFO] 情感: {emotion}, 情绪强度: {emotion_scale if emotion_scale else 4}（默认）")
     print(f"[INFO] 文本长度: {len(text)} 字符")
     print(f"[INFO] Request ID: {request_id}")
 
@@ -213,11 +238,15 @@ def main():
     )
 
     parser.add_argument("--text", required=True, help="待合成的文本内容")
-    parser.add_argument("--speaker", default="S_9W2ToNVW1", help="音色 ID（默认: S_9W2ToNVW1）")
+    parser.add_argument(
+        "--speaker",
+        default=None,
+        help="音色 ID（默认读取 DOUBAO_SPEAKER 环境变量，未设置则用 zh_female_xiaohe_uranus_bigtts）",
+    )
     parser.add_argument(
         "--resource-id",
-        default="seed-icl-1.0",
-        help="资源 ID（声音复刻用 seed-icl-1.0，官方1.0用 seed-tts-1.0，官方2.0用 seed-tts-2.0）",
+        default=None,
+        help="资源 ID（默认根据音色 ID 自动推断：S_ 用 seed-icl-1.0，uranus 用 seed-tts-2.0，其余用 seed-tts-1.0）",
     )
     parser.add_argument("--format", default="mp3", choices=VALID_FORMATS, help="音频格式（默认: mp3）")
     parser.add_argument(
@@ -226,6 +255,8 @@ def main():
     parser.add_argument("--speech-rate", type=int, default=0, help="语速 [-50, 100]（默认: 0）")
     parser.add_argument("--loudness-rate", type=int, default=0, help="音量 [-50, 100]（默认: 0）")
     parser.add_argument("--pitch", type=int, default=0, help="音调 [-12, 12]（默认: 0）")
+    parser.add_argument("--emotion", default="", help="情感类型，如 happy/sad/angry/neutral（仅部分音色支持）")
+    parser.add_argument("--emotion-scale", type=int, default=0, help="情绪强度 [1, 5]，默认 4，需配合 --emotion 使用")
     parser.add_argument("--output", default="output.mp3", help="输出文件路径（默认: output.mp3）")
     parser.add_argument("--model", default="", help="模型版本（如 seed-tts-1.1）")
     parser.add_argument("--app-id", default=None, help="APP ID（也可通过 DOUBAO_APP_ID 环境变量设置）")
@@ -236,6 +267,13 @@ def main():
     # 获取认证信息
     app_id = args.app_id or os.environ.get("DOUBAO_APP_ID")
     access_key = args.access_key or os.environ.get("DOUBAO_ACCESS_KEY")
+
+    # 获取音色 ID：命令行参数 > 环境变量 > 默认值
+    speaker = args.speaker or os.environ.get("DOUBAO_SPEAKER") or DEFAULT_SPEAKER
+
+    # 自动推断 resource_id（命令行参数优先）
+    resource_id = args.resource_id or infer_resource_id(speaker)
+    print(f"[INFO] 音色: {speaker}, 资源 ID: {resource_id}")
 
     if not app_id:
         print("[ERROR] 未设置 APP ID。请通过 --app-id 参数或 DOUBAO_APP_ID 环境变量提供。")
@@ -264,18 +302,24 @@ def main():
         print("[ERROR] 音调范围为 [-12, 12]")
         sys.exit(1)
 
+    # emotion_scale 仅在 emotion 设置时有意义
+    if args.emotion_scale and not args.emotion:
+        print("[WARN] --emotion-scale 需配合 --emotion 使用，已忽略")
+
     # 执行合成
     synthesize(
         text=args.text,
-        speaker=args.speaker,
+        speaker=speaker,
         app_id=app_id,
         access_key=access_key,
-        resource_id=args.resource_id,
+        resource_id=resource_id,
         audio_format=args.format,
         sample_rate=args.sample_rate,
         speech_rate=args.speech_rate,
         loudness_rate=args.loudness_rate,
         pitch=args.pitch,
+        emotion=args.emotion,
+        emotion_scale=args.emotion_scale,
         output_path=args.output,
         model=args.model,
     )
